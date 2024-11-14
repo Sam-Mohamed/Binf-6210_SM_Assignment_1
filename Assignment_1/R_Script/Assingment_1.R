@@ -10,6 +10,7 @@
 #install.packages("rworldmap")
 library(tidyverse)
 library(rworldmap)
+library(rworldxtra)
 library(viridis)
 conflicted::conflict_prefer("filter", "dplyr")
 
@@ -17,42 +18,44 @@ conflicted::conflict_prefer("filter", "dplyr")
 # df_bold = bold_specimens(taxon = c("Cricetidae", "Chromadorea"))
 # write_tsv(df_bold, "Bold.tsv")
 
-## 3 - READING DATA ----
+## 3 - Reading Data ----
 
 # Remember to set your working directory
 
 # Reading in data and Selecting relevant columns for the study
 
 df_bold <- read_tsv("../data/Bold.tsv") %>%
-  select(class_name, species_name, lat, lon)
+  select(class_name, species_name, lat, lon) %>%
+  drop_na() %>%
+  filter(!if_any(where(is.character), ~ . == "" | . == " ")) # rather than simply checking, remove rows with empty strings or space
+
+# It is a bit confusing that Cricetidae are called "Mammalia" in the tsv file and in the rest of the code. For clarity of code comprehension I am changing these entries to "Cricetidae", which carries over to the rest of the code
+df_bold$class_name[df_bold$class_name == "Mammalia"] <- "Cricetidae"
 
 ## 4 - Exploring Data and Checking Formatting ----
-# Check class
-class(df_bold)
+head(df_bold, 3) # more concise way of showing colnames, classes and variable examples
 
-# See variables
-names(df_bold)
-
-# Summary and check for NAs and overall data structure
+# Summary of of overall data structure
 summary(df_bold)
 
-# Check for rows with empty strings or space
-df_bold %>%
-  filter(if_any(where(is.character), ~ . == "" | . == " "))
-
-# Filtering out rows with NA value
-df_bold <- na.omit(df_bold)
-
-## 5 - Map representing worldwide distribution of species of the class Chromadorea ----
+## 5 - Map representing worldwide distribution of species of both Chromadorea and Cricetidae species----
 # Tibble for Chromadorea species count grouped based on latitude and longitude
-df_chro_ll <- df_bold %>%
-  filter(class_name == "Chromadorea") %>%
-  mutate(lat = round(lat), lon = round(lon)) %>%
-  group_by(lat, lon) %>%
-  summarise(
-    species_count = n_distinct(species_name),
-    .groups = "drop"
-  )
+species_latlon <- function(df = df_bold, class) {
+  df %>%
+    filter(class_name == class) %>%
+    mutate(lat = round(lat), lon = round(lon)) %>%
+    group_by(lat, lon) %>%
+    summarise(
+      species_count = n_distinct(species_name),
+      .groups = "drop"
+    )
+}
+df_chro_ll <- species_latlon(class = "Chromadorea")
+df_cric_ll <- species_latlon(class = "Cricetidae")
+
+# note that most of the count data is confined to a small range
+summary(df_chro_ll$species_count)
+quantile(df_chro_ll$species_count, 0.995) # 99.5% of the Chromadorea data is in the range 1-50, Cricetidae is confined to an even smaller range (code not shown).
 
 # Get world map data and converting it to data frame for ggplot2
 df_world_map <- getMap(resolution = "high") %>%
@@ -63,24 +66,26 @@ ggplot() +
     data = df_world_map, aes(x = long, y = lat, group = group),
     fill = "lightgray", color = "gray"
   ) +
-  geom_point(data = df_chro_ll, aes(x = lon, y = lat, color = species_count), size = 0.7, alpha = 0.6) +
-  scale_color_viridis_c(option = "viridis", name = "Species") +
+  geom_point(data = df_chro_ll, aes(x = lon, y = lat, color = species_count), shape = 10, size = 0.9, alpha = 0.6) +
+  geom_point(data = df_cric_ll, aes(x= lon, y = lat, color = species_count), shape = 25, size = 0.9, alpha = 0.6) +
+  scale_color_viridis_c(option = "turbo", name = "Number of Species", transform = "log2", limits = c(1, 50)) + # including 99.5% of the data, on log scale for visibility
   scale_x_continuous(breaks = seq(-180, 180, by = 30)) +
   scale_y_continuous(breaks = seq(-90, 90, by = 30)) +
   labs(
-    title = "Chromadorea Species Geographical Distribution",
-    x = "Longitude",
-    y = "Latitude"
+    title = "Distribution of Chromadorea and Cricetidae Worldwide",
+    subtitle = "Number of Species transformed to log2 scale",
+    x = "Longitude (deg)",
+    y = "Latitude (deg)"
   ) +
-  theme_minimal() +
+  theme_bw() +
   theme(
-    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    plot.title = element_text(hjust = 0.3, size = 14, face = "bold"),
     axis.title = element_text(size = 12),
     axis.text = element_text(size = 12)
   )
 
 # Exporting the Plot with size writable for A4 paper
-ggsave("Chromadorea Species Geographical Distribution.PNG", width = 6.4, height = 3)
+#ggsave("Chromadorea Cricetidae Species Geographical Distribution.PNG", dpi = 600)
 
 ## 6 - Correlation between distance from equator (degree) and species richness of Chromadorea and Cricetidae ----
 # Tibble with the species count of each targeted taxa grouped based on distance from equator (degree)
@@ -88,42 +93,30 @@ df_dist_eq <- df_bold %>%
   mutate(dist_eq_deg = round(abs(lat))) %>% # Converting latitude into distance from equator (degrees)
   group_by(dist_eq_deg) %>%
   summarise(
-    Cricetidae = n_distinct(species_name[class_name == "Mammalia"]),
+    Cricetidae = n_distinct(species_name[class_name == "Cricetidae"]),
     Chromadorea = n_distinct(species_name[class_name == "Chromadorea"])
   )
 
+# Create function for Shapiro-Wilk test
+shapiroWilk <- function(name, df = df_dist_eq, log = FALSE) {
+  if (log == TRUE) {
+    temp <- df %>%
+      filter(name != 0) %>%
+      pull(name)
+    col <- ifelse(temp == 0, 0, log(temp))
+    return (col %>%
+              shapiro.test %>%
+              print())}
+  else df %>%
+    filter(name != 0 ) %>%
+    pull(name) %>%
+    shapiro.test %>%
+    print()
+}
+
 # Shapiro-Wilk test of normality to determine if the Cricetidae data follows normal distribution
-shapiro_test_cric <- shapiro.test(df_dist_eq$Cricetidae[df_dist_eq$Cricetidae != 0]) %>%
-  print()
-
-# ==> Result Shapiro-Wilk test
-# p-value = 0.000281 ==> data does not follow normal distribution.
-
-# Spearman's Rank Correlation -- To determine if there is a correlation between latitude and Circetidae species richness
-spearman_cric <- cor.test(df_dist_eq$dist_eq_deg[df_dist_eq$Cricetidae != 0], df_dist_eq$Cricetidae[df_dist_eq$Cricetidae != 0], method = "spearman") %>%
-  print()
-
-# ==> Result Spearman's Rank Correlation
-# Rho (ρ) value = -0.46 ==> moderate negative correlation
-# p-value = 2.567e-05 ==> correlation is statistically significant
-# There is a statistically significant moderate negative correlation between the distance from the equator (degrees) and species richness
-
-# Shapiro-Wilk test of normality to determine if the Chromadorea data follows normal distribution
-shapiro_test_chro <- shapiro.test(df_dist_eq$Chromadorea[df_dist_eq$Chromadorea != 0]) %>%
-  print()
-
-# ==> Result Shapiro-Wilk test
-# p-value = 2.071e-10 ==> data does not follow normal distribution.
-
-# Spearman's Rank Correlation -- To determine if there is a correlation between latitude and Chromadorea species richness
-spearman_chro <- cor.test(df_dist_eq$dist_eq_deg[df_dist_eq$Chromadorea != 0], df_dist_eq$Chromadorea[df_dist_eq$Chromadorea != 0], method = "spearman") %>%
-  print()
-
-# ==> Result Spearman's Rank Correlation
-# Rho (ρ) value = --0.09134011 ==> very weak negative correlation
-# p-value = 0.4422 ==> correlation is not statistically significant
-# There is no significant relationship between the distance from the equator (degrees) and species richness
-
+shapiroWilk("Cricetidae") # W = 0.93 (very good fit) and p < 0.001
+shapiroWilk("Chromadorea") # W = 0.72 (somewhat good fit) and p < 4e-11
 
 # Combining Cricetidae and Chromadorea species count into a single column
 df_dist_eq_long <- df_dist_eq %>%
@@ -136,7 +129,6 @@ df_dist_eq_long <- df_dist_eq %>%
 # Scatter plot represents correlation between species richness (Chromadorea and Cricetidae) and distance from the equator
 ggplot(df_dist_eq_long, aes(x = dist_eq_deg, y = species_richness)) +
   geom_point() +
-  geom_smooth(method = "loess", se = TRUE, size = 0.5) +
   labs(
     title = "Correlation between species richness vs distance from equator",
     x = "Distance from Equator (degrees)",
@@ -154,71 +146,168 @@ ggplot(df_dist_eq_long, aes(x = dist_eq_deg, y = species_richness)) +
   )
 
 # Exporting the Plot with size suitable for A4 paper
-ggsave("Correlation between species richness vs distance from equator.PNG", width = 6.4, height = 4)
+# ggsave("Correlation between species richness vs distance from equator.PNG", dpi = 600)
 
-## 7 - Correlation between Cricetidae and Chromadorea species distribution ----
-# Separate tibble for Chromadorea and Cricetidae species count grouped based on latitude with new source column for combining the data
+# with log-transformed data the test statistics are both good fits
+shapiroWilk("Cricetidae", log = TRUE) # W = 0.91 (very good fit) and p < 2e-05
+shapiroWilk("Chromadorea", log = TRUE) # W = 0.96 (near-perfect fit) and p < 0.025
 
-df_chro_lat_sp <- df_bold %>%
-  filter(class_name == "Chromadorea") %>%
-  mutate(lat = round(lat)) %>%
-  group_by(lat) %>%
-  summarise(species_count = n_distinct(species_name)) %>%
-  mutate(source = "Chromadorea")
+# extract r^2 from quadratic model for both classes, to be used on plot downstream
+r2_cricetidae <- lm(data = df_dist_eq,
+                    ifelse(Cricetidae == 0, 0, log(Cricetidae)) ~ poly(dist_eq_deg, 2)) %>% 
+  summary %>%
+  .$r.squared
+r2_chromadorea <- lm(data = df_dist_eq,
+                     ifelse(Chromadorea == 0, 0, log(Chromadorea)) ~ poly(dist_eq_deg, 2)) %>% 
+  summary %>%
+  .$r.squared
 
-df_cric_lat_sp <- df_bold %>%
-  filter(class_name == "Mammalia") %>%
-  mutate(lat = round(lat)) %>%
-  group_by(lat) %>%
-  summarise(species_count = n_distinct(species_name)) %>%
-  mutate(source = "Cricetidae")
+# Visualize transformed data
+ggplot(data = df_dist_eq) +
+  # points for Cricetidae
+  geom_point(
+    aes(
+      x=dist_eq_deg, 
+      y = ifelse(Cricetidae == 0,
+                 Cricetidae,
+                 log(Cricetidae)),
+      shape = "Cricetidae", color = "Cricetidae")) +
+  # polynomial regression fitted to log-transformed Cricetidae count data
+  geom_smooth(
+    data = df_dist_eq,
+    size = 0.5,
+    aes(
+      x = dist_eq_deg,
+      y = ifelse(Cricetidae == 0, Cricetidae, log(Cricetidae)),
+      color = "Cricetidae"
+    ),
+    method = "lm",
+    formula = y ~ poly(x, 2),
+    se = FALSE # don't need to show standard error bars
+  ) +
+  # points for Chromadorea
+  geom_point(
+    aes(
+      x=dist_eq_deg, 
+      y = ifelse(Chromadorea == 0,
+                 Chromadorea,
+                 log(Chromadorea)),
+      shape = "Chromadorea", color = "Chromadorea")) +
+  scale_color_manual(
+    values = c("Cricetidae" = "blueviolet", "Chromadorea" = "darkgoldenrod3"),
+    name = "Species"
+  ) +
+  # polynomial regression fitted to log-transformed Chromadorea count data
+  geom_smooth(
+    data = df_dist_eq,
+    size = 0.5,
+    aes(
+      x = dist_eq_deg,
+      y = ifelse(Chromadorea == 0, Chromadorea, log(Chromadorea)),
+      color = "Chromadorea"
+    ), 
+    method = "lm",
+    formula = y ~ poly(x, 2),
+    se = FALSE # don't need standard error bars shown
+  ) +
+  scale_shape_manual(
+    values = c("Cricetidae" = 0, "Chromadorea" = 1),
+    name = "Species"
+  ) +
+  # Add R^2 for Cricetidae quadratic regression
+  annotate(
+    "text", x = 63, y = 4.35, label = paste0("Cricetidae R² = ", round(r2_cricetidae, 3)),
+    color = "black", size = 2.5, hjust = 0
+  ) +
+  # Add R^2 for Chromadorea quadratic regression
+  annotate(
+    "text", x = 63, y = 4.20, label = paste0("Chromadorea R² = ", round(r2_chromadorea, 3)),
+    color = "black", size = 2.5, hjust = 0
+  ) +
+  labs(
+    title = "Species count of Cricetidae and Chromadorea vs. distance from the equator",
+    subtitle = "Quadratic regression lines fitted overtop data",
+    x = "Distance from Equator (deg)",
+    y = "ln(species count)") +
+  theme(
+    plot.title = element_text(hjust = 0.3, size = 14, face = "bold"),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 12)
+  ) +
+  theme_bw()
 
-# Shapiro-Wilk test
-shapiro_test_chro_lat_sp <- shapiro.test(df_chro_lat_sp$species_count) %>%
-  print()
+# save plot
+#ggsave("Species count vs distance.PNG", dpi = 600)
 
-# ==> Result Shapiro-Wilk test
-# p-value = 2.929e-05 ==> data does not follows normal distribution.
+# Although the distance from the equator appears to follow a normal distribution for both Cricetidae and Chromadorea, there does not appear to be a linear relationship between species count and distance from the equator. As such, pearson's product moment correlation is not an appropriate correlation test. Either spearman or kendall's rank correlation should be used- but which of the two?
 
-# Shapiro-Wilk test
-shapiro_test_cric_lat_sp <- shapiro.test(df_cric_lat_sp$species_count) %>%
-  print()
+## 7 - Rank Correlation ---- 
+# Spearman's Rank Correlation to determine if there is a correlation between latitude and Cricetidae species richness.
 
-# ==> Result Shapiro-Wilk test
-# p-value = 0.9222 ==> data does not follows normal distribution.
 
-# Formatting a new data frame with the species count of both Chromadorea and Cricetidae to study their correlation
-df_comb_lat_sp <- rbind(df_cric_lat_sp, df_chro_lat_sp)
-df_comb_lat_sp_wid <- df_comb_lat_sp %>%
-  pivot_wider(names_from = source, values_from = species_count)
-
-# Spearman's Rank Correlation -- To determine if there is a correlation between Chromadorea and Circetidae species richness
-correlation_result <- cor.test(df_comb_lat_sp_wid$Cricetidae, df_comb_lat_sp_wid$Chromadorea, method = "spearman") %>%
+spearman_cric <- cor.test(df_dist_eq$dist_eq_deg[df_dist_eq$Cricetidae != 0], df_dist_eq$Cricetidae[df_dist_eq$Cricetidae != 0], method = "spearman") %>%
   print()
 
 # ==> Result Spearman's Rank Correlation
-# Rho (ρ) value = 0.304 ==> moderate positive correlation
-# p-value = 0.005362 ==> correlation is  statistically significant
+# Rho (ρ) value = -0.46 ==> moderate negative correlation (with the bounds of [-1,1])
+# p-value = 2.567e-05 ==> correlation is statistically significant
+
+# Running Spearman's rank correlation test returns the warning that there are ties in the data. With only a few tied data points, this would not affect the interpretability of the results. Checking how many ties there are in the data:
+paste0("There are ", sum(duplicated(df_dist_eq$Cricetidae)), " ties in Cricetidae counts.") %>% cat
+paste0("There are ", sum(duplicated(df_dist_eq$Chromadorea)), " ties in Chromadorea counts.") %>% cat
+
+# With just 80 rows, 47.5% to 61.25% of the data has ties. As such, Kendall's Tau will be more interpretable than Spearman's Rho for so much tied data:
+Kendall_cor_Cric <- cor.test(df_dist_eq$dist_eq_deg, df_dist_eq$Cricetidae, method = "kendall") %>%
+  print() # tau = -0.355 (slight-moderate negative correlation), p < 4e-06. 
+Kendall_cor_Chro <- cor.test(df_dist_eq$dist_eq_deg, df_dist_eq$Chromadorea, method = "kendall") %>%
+  print() # tau = -0.19 (very slight negative correlation), p < 0.025 
+
+# There is a statistically significant moderate negative correlation between the distance from the equator (degrees) and species richness
+# however, in data with discrete random variables (e.g. species counts) the bounds of Rho and Tau change -> Denuit, Mesfioui & Trufin wrote a statistical proof showing just this, with the real-world implication being that in some cases a small Rho or Tau actually represents a strong correlation (Denuit, M., Mesfioui, M., & Trufin, J. (2019). Concordance-based predictive measures in regression models for discrete responses. Scandinavian Actuarial Journal, 1–13. doi:10.1080/03461238.2019.1624274)
+# Kendall's tau is represented by 𝛕[Y,X] = P(Y1 - Y2)(X1-X2) > 0] - P(Y1-Y2)(X1-X2) < 0] i.e. the probability that values are not tied minus the probability that they are tied. cor.test() assumes bounds of [-1,1] but Denuit, Mesfioui & Trufin show that this is not necessarily the case, especially in data with many observations.
+# The upper bound can be derived as 𝛕[Y,X] ≤ 2*min{E[F_Y(Y^-)], E[F_X(X^-)]} where F_Y(Y^-) and F_X(X^-) are the CDFs of Y and X evaluated at the left limit.
+
+## 8 - Calculating adjusted Tau ----
+#Applying this to the dist_eq_deg and Cricetidae columns (Y and X, respectively):
+# 1. calculate E[F_Y(Y^-)]
+pmf_dist <- as.data.frame(table(df_dist_eq$dist_eq_deg)/80) # probability mass function, the probability of getting any one row should be the same as they are indices
+colnames(pmf_dist) <- c("Obs", "Prob")
+pmf_dist_lower <- c(0, cumsum(pmf_dist$Prob)[-nrow(pmf_dist)]) # cumulative probabilities up to i-1
+cdfDist <- sum(pmf_dist$Prob * pmf_dist_lower) # E[F_Y(Y^-)] = 0.49375
+
+# 2. calculate E[F_X(X^-)]
+pmf_Cric <- as.data.frame(table(df_dist_eq$Cricetidae)/80, stringsAsFactors = F) # creating a table with each value that appears in the data, and a probability based on how frequently that value appears
+colnames(pmf_Cric) <- c("Obs", "Prob")
+pmf_Cric$Obs <- as.numeric(pmf_Cric$Obs)
+pmf_Cric_lower <- c(0, cumsum(pmf_Cric$Prob)[-nrow(pmf_Cric)]) # ""
+cdfCric <- sum(pmf_Cric$Prob * pmf_Cric_lower) # 0.4745
+
+# and for Chromadorea
+pmf_Chro <- as.data.frame(table(df_dist_eq$Chromadorea)/80, stringsAsFactors = F) # creating a table with each value that appears in the data, and a probability based on how frequently that value appears
+colnames(pmf_Chro) <- c("Obs", "Prob")
+pmf_Chro$Obs <- as.numeric(pmf_Chro$Obs)
+pmf_Chro_lower <- c(0, cumsum(pmf_Chro$Prob)[-nrow(pmf_Chro)]) # ""
+cdfChro <- sum(pmf_Chro$Prob * pmf_Chro_lower) # 0.4745
+
+# 3. calculate true upper bound for Kendall's tau
+Cric_bound <- 2*min(cdfDist, cdfCric)
+Chro_bound <- 2*min(cdfDist, cdfChro)
+
+# adjust Tau for true upper bound
+unadjusted_tau_Cric <- Kendall_cor_Cric$estimate[[1]] 
+adjusted_tau_Cric <- unadjusted_tau_Cric/Cric_bound # now representative of Tau in [-1,1] bounds
+unadjusted_tau_Chro <- Kendall_cor_Chro$estimate[[1]] 
+adjusted_tau_Chro <- unadjusted_tau_Chro/Chro_bound # now representative of Tau in [-1,1] bounds
+
+paste0("The adjusted tau for Cricetidae is ", round(adjusted_tau_Cric, 2), " from -0.35") %>% cat # adjusted is about 2% greater than unadjusted
+paste0("The adjusted tau for Chromadorea is ", round(adjusted_tau_Chro, 2), " from -0.19") %>% cat # adjusted is about 1% greater than unadjusted
+
+## 9 - Correlation between Cricetidae and Chromadorea species distributions ----
+# Kendall's Rank Correlation -- To determine if there is a correlation between Chromadorea and Circetidae species richness
+correlation_result <- cor.test(df_dist_eq$Cricetidae, df_dist_eq$Chromadorea, method = "kendall") %>%
+  print()
+
+# ==> Result Spearman's Rank Correlation
+# Tau (𝛕) value = 0.381 ==> moderate positive correlation
+# p-value = 1.2e-06 ==> correlation is  statistically significant
 # There is statistically significant moderate positive correlation between the geographical distributions of Cricetidae and Chromadorea
-
-
-# Scatter Plot of Cricetidae vs. Chromadorea Abundance
-ggplot(df_comb_lat_sp_wid, aes(x = Cricetidae, y = Chromadorea)) +
-  geom_point(color = "darkgreen") +
-  geom_smooth(method = "loess", se = TRUE, color = "navy", size = 1) +
-  labs(
-    title = "Correlation between Cricetidae and Chromadorea Abundance",
-    x = "Cricetidae Abundance",
-    y = "Chromadorea Abundance"
-  ) +
-  theme_minimal() +
-  theme(
-    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
-    axis.text = element_text(size = 12, colour = "black"),
-    axis.title = element_text(size = 12),
-    panel.grid.major = element_line(color = "gray70", size = 0.5),
-    panel.grid.minor = element_line(color = "gray85", size = 0.25)
-  )
-
-# Exporting the Plot with size suitable for A4 paper
-ggsave("Correlation between Cricetidae and Chromadorea Abundance.PNG", width = 6.4, height = 4)
